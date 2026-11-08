@@ -2,215 +2,206 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.optimize import brentq
 
-st.set_page_config(page_title="מודל כלונס מלמעלה למטה (Top-Down)", layout="wide")
-st.title("🏗️ מודל גיאומכני מלמעלה למטה (Top-Down) – גיוס הדרגתי מהראש לקצה (V7)")
+# Page configuration / הגדרות עמוד
+st.set_page_config(page_title="Geotechnical Pile Model / מודל גיאומכני לכלונסאות", layout="wide")
+
+st.title("📊 Geotechnical Finite Difference Model - Multi-Layer Soil & Spring Stiffness")
+st.subheader("מודל גיאומכני להפרשים סופיים - כלונס בשכבות קרקע עם קשיחות קפיצים")
 st.markdown("---")
 
-def calc_shear_stress(w, t_peak, t_res, w_p, w_r):
-    if w <= 1e-9 or t_peak <= 0:
-        return 0.0, "נייח (עומס טרם הגיע)"
-    elif w <= w_p:
-        return (t_peak / w_p) * w, "אלסטי (מגייס חיכוך)"
-    elif w <= w_r:
-        slope = (t_peak - t_res) / max((w_r - w_p), 1e-6)
-        return t_peak - slope * (w - w_p), "ריכוך (ירידה למשתייר)"
-    else:
-        return t_res, "משתייר (Residual)"
-
-def shoot_top_down(w0, layers_df, E, D, B):
-    A = np.pi * (D**2) / 4.0
-    U = np.pi * D
-    num_layers = len(layers_df)
-    depths = [0.0] + layers_df["עומק תחתית שכבה (מ')"].tolist()
-
-    w_node = np.zeros(num_layers + 1)
-    P_node = np.zeros(num_layers + 1)
-    t_mob_seg = np.zeros(num_layers)
-    F_fric_seg = np.zeros(num_layers)
-    state_seg = [""] * num_layers
-
-    w_crit = np.zeros(num_layers + 1)
-    P_crit = np.zeros(num_layers + 1)
-    for i in range(num_layers - 1, -1, -1):
-        dz = max(depths[i + 1] - depths[i], 0.01)
-        sig_h = layers_df.loc[i, "לחץ פרסיומטר σ'h (kPa)"]
-        t_p = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית חיכוך שיא δ_peak (°)"]))
-        t_r = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית משתיירת δ_res (°)"]))
-        w_p = layers_df.loc[i, "תזוזת שיא w_peak (מ\"מ)"] / 1000.0
-        w_r = layers_df.loc[i, "תזוזת התייצבות w_res (מ\"מ)"] / 1000.0
-
-        w_est = w_crit[i + 1] + (P_crit[i + 1] * dz) / (E * A) + 0.5 * w_p
-        t_m, _ = calc_shear_stress(0.5 * (w_crit[i + 1] + w_est), t_p, t_r, w_p, w_r)
-        F_f = U * dz * t_m
-        P_crit[i] = P_crit[i + 1] + F_f
-        w_crit[i] = w_crit[i + 1] + (0.5 * (P_crit[i] + P_crit[i + 1]) * dz) / (E * A)
-
-    w0_limit = float(w_crit.item(0))
-
-    if w0 <= w0_limit:
-        def residual_stage_a(P0_guess):
-            w_tmp = np.zeros(num_layers + 1)
-            P_tmp = np.zeros(num_layers + 1)
-            w_tmp[0] = w0
-            P_tmp[0] = P0_guess
-            for i in range(num_layers):
-                if P_tmp[i] <= 1e-6 or w_tmp[i] <= 1e-9:
-                    w_tmp[i + 1] = 0.0
-                    P_tmp[i + 1] = 0.0
-                    continue
-                dz = max(depths[i + 1] - depths[i], 0.01)
-                sig_h = layers_df.loc[i, "לחץ פרסיומטר σ'h (kPa)"]
-                t_p = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית חיכוך שיא δ_peak (°)"]))
-                t_r = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית משתיירת δ_res (°)"]))
-                w_p = layers_df.loc[i, "תזוזת שיא w_peak (מ\"מ)"] / 1000.0
-                w_r = layers_df.loc[i, "תזוזת התייצבות w_res (מ\"מ)"] / 1000.0
-
-                w_bot_est = max(w_tmp[i] - (P_tmp[i] * dz) / (E * A), 0.0)
-                w_mid = 0.5 * (w_tmp[i] + w_bot_est)
-                t_m, _ = calc_shear_stress(w_mid, t_p, t_r, w_p, w_r)
-                F_f = U * dz * t_m
-
-                if F_f >= P_tmp[i]:
-                    P_tmp[i + 1] = 0.0
-                    w_tmp[i + 1] = 0.0
-                else:
-                    P_tmp[i + 1] = P_tmp[i] - F_f
-                    P_mean = 0.5 * (P_tmp[i] + P_tmp[i + 1])
-                    w_tmp[i + 1] = max(w_tmp[i] - (P_mean * dz) / (E * A), 0.0)
-            return float(P_tmp[-1])
-
-        try:
-            P0_solved = brentq(residual_stage_a, 0.0, float(P_crit.item(0)) * 1.5)
-        except Exception:
-            P0_solved = float(P_crit.item(0)) * (w0 / max(w0_limit, 1e-6))
-
-        w_node[0] = w0
-        P_node[0] = P0_solved
-        for i in range(num_layers):
-            if P_node[i] <= 1e-6 or w_node[i] <= 1e-9:
-                w_node[i + 1] = 0.0
-                P_node[i + 1] = 0.0
-                t_mob_seg[i] = 0.0
-                F_fric_seg[i] = 0.0
-                state_seg[i] = "נייח (עומס טרם הגיע)"
-                continue
-            dz = max(depths[i + 1] - depths[i], 0.01)
-            sig_h = layers_df.loc[i, "לחץ פרסיומטר σ'h (kPa)"]
-            t_p = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית חיכוך שיא δ_peak (°)"]))
-            t_r = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית משתיירת δ_res (°)"]))
-            w_p = layers_df.loc[i, "תזוזת שיא w_peak (מ\"מ)"] / 1000.0
-            w_r = layers_df.loc[i, "תזוזת התייצבות w_res (מ\"מ)"] / 1000.0
-
-            w_bot_est = max(w_node[i] - (P_node[i] * dz) / (E * A), 0.0)
-            w_mid = 0.5 * (w_node[i] + w_bot_est)
-            t_m, st_label = calc_shear_stress(w_mid, t_p, t_r, w_p, w_r)
-            F_f = U * dz * t_m
-
-            if F_f >= P_node[i]:
-                F_fric_seg[i] = P_node[i]
-                t_mob_seg[i] = P_node[i] / (U * dz)
-                P_node[i + 1] = 0.0
-                w_node[i + 1] = 0.0
-                state_seg[i] = "בלימת החזית (כאן הכוח מתאפס)"
-            else:
-                F_fric_seg[i] = F_f
-                t_mob_seg[i] = t_m
-                P_node[i + 1] = P_node[i] - F_f
-                P_mean = 0.5 * (P_node[i] + P_node[i + 1])
-                w_node[i + 1] = max(w_node[i] - (P_mean * dz) / (E * A), 0.0)
-                state_seg[i] = st_label
-
-        stage_name = "שלב א': גיוס הדרגתי מלמעלה (הקצה עדיין נייח, P_base = 0)"
-    else:
-        def eval_from_wbase(wb):
-            wn = np.zeros(num_layers + 1)
-            Pn = np.zeros(num_layers + 1)
-            tm = np.zeros(num_layers)
-            Ff = np.zeros(num_layers)
-            ss = [""] * num_layers
-            wn[num_layers] = wb
-            Pn[num_layers] = B * np.sqrt(wb) if wb > 0 else 0.0
-            for i in range(num_layers - 1, -1, -1):
-                dz = max(depths[i + 1] - depths[i], 0.01)
-                sig_h = layers_df.loc[i, "לחץ פרסיומטר σ'h (kPa)"]
-                t_p = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית חיכוך שיא δ_peak (°)"]))
-                t_r = sig_h * np.tan(np.radians(layers_df.loc[i, "זווית משתיירת δ_res (°)"]))
-                w_p = layers_df.loc[i, "תזוזת שיא w_peak (מ\"מ)"] / 1000.0
-                w_r = layers_df.loc[i, "תזוזת התייצבות w_res (מ\"מ)"] / 1000.0
-
-                w_top_est = wn[i + 1] + (Pn[i + 1] * dz) / (E * A)
-                t_mob, st_l = calc_shear_stress(0.5 * (wn[i + 1] + w_top_est), t_p, t_r, w_p, w_r)
-                F_f = U * dz * t_mob
-                Pn[i] = Pn[i + 1] + F_f
-                wn[i] = wn[i + 1] + (0.5 * (Pn[i] + Pn[i + 1]) * dz) / (E * A)
-                tm[i], Ff[i], ss[i] = t_mob, F_f, st_l
-            return wn, Pn, tm, Ff, ss
-
-        wb_solved = brentq(lambda wb: float(eval_from_wbase(wb)[0].item(0)) - w0, 0.0, 0.5)
-        w_node, P_node, t_mob_seg, F_fric_seg, state_seg = eval_from_wbase(wb_solved)
-        stage_name = "שלב ב': הקצה מגויס (תגובת בסיס פרבולית פעילה)"
-
-    cum_fric_seg = np.cumsum(F_fric_seg)
-    q_base = float(P_node[-1]) / A
-    return depths, w_node, P_node, t_mob_seg, F_fric_seg, cum_fric_seg, q_base, state_seg, stage_name
-
-col_inputs, col_results = st.columns([1.25, 1.75])
+# Layout: Inputs on the right (Hebrew friendly), Results on the left
+col_results, col_inputs = st.columns([2, 1])
 
 with col_inputs:
-    st.header("⚙️ 1. פרמטרים והפעלת עומס/שקיעה בראש")
-    c1, c2 = st.columns(2)
-    with c1:
-        E = st.number_input("מודול אלסטיות חומר E (kPa)", value=30000000, step=1000000)
-        D = st.number_input("קוטר הכלונס D (מטר)", min_value=0.2, max_value=3.0, value=0.6, step=0.05)
-    with c2:
-        B = st.number_input("מקדם בסיס פרבולי B (kN/m^0.5)", value=150.0, step=10.0)
-        w0_mm = st.slider("תזוזה בראש הכלונס w₀ (מ\"מ) [מלמעלה למטה]", min_value=0.0, max_value=40.0, value=2.5, step=0.25)
-
+    st.header("⚙️ Input Parameters / פרמטרים וקלטים")
+    
+    # Structural parameters / פרמטרים מבניים
+    st.subheader("🏗️ Pile Properties / מאפייני הכלונס")
+    E = st.number_input("Pile Elastic Modulus / מודול אלסטיות E (kPa)", value=30000000, step=1000000)
+    D = st.slider("Pile Diameter / קוטר הכלונס D (m)", min_value=0.3, max_value=2.0, value=0.6, step=0.05)
+    B = st.number_input("Base Coefficient / מקדם קשיחות בסיס b (kN/m^0.5)", value=150.0, step=10.0)
+    
+    A = np.pi * (D**2) / 4
+    U = np.pi * D
+    dz = 1.0  # constant segment length / אורך מקטע קבוע
+    
     st.markdown("---")
-    st.header("📂 2. נתוני השכבות (פרסיומטר וגזירה ישירה)")
-    default_layers = pd.DataFrame({
-        "עומק תחתית שכבה (מ')": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
-        "לחץ פרסיומטר σ'h (kPa)": [90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 175.0, 190.0],
-        "זווית חיכוך שיא δ_peak (°)": [32.0, 32.0, 32.0, 30.0, 30.0, 30.0, 33.0, 33.0, 34.0, 34.0],
-        "תזוזת שיא w_peak (מ\"מ)": [2.0, 2.0, 2.5, 2.5, 3.0, 3.0, 2.0, 2.0, 2.0, 2.0],
-        "זווית משתיירת δ_res (°)": [26.0, 26.0, 26.0, 24.0, 24.0, 24.0, 27.0, 27.0, 28.0, 28.0],
-        "תזוזת התייצבות w_res (מ\"מ)": [8.0, 8.0, 10.0, 10.0, 12.0, 12.0, 9.0, 9.0, 9.0, 9.0]
-    })
+    # Base settlement slider / שקיעת הבסיס
+    w_base_input = st.slider("Base Settlement / שקיעת הבסיס w_base (m)", min_value=0.0, max_value=0.03, value=0.005, step=0.0005, format="%.4f")
+    
+    st.markdown("---")
+    st.subheader("🌍 Soil Layers Boundaries / הגדרת עומק השכבות")
+    
+    # Manual depth input for layers / הזנת עומקים ידנית
+    layer1_end = st.number_input("Layer 1 Bottom Depth / עומק תחתית שכבה 1 (m)", min_value=1.0, max_value=9.0, value=3.0, step=1.0)
+    layer2_end = st.number_input("Layer 2 Bottom Depth / עומק תחתית שכבה 2 (m)", min_value=layer1_end+1.0, max_value=9.5, value=7.0, step=1.0)
+    
+    st.markdown("**Select Soil Type per Layer / בחר סוג קרקע לכל שכבה:**")
+    layer_top = st.selectbox("Layer 1 Soil / סוג קרקע שכבה 1", ["Loose Sand / חול רך", "Dense Sand / חול צפוף", "Clay / חרסית"], index=0)
+    layer_mid = st.selectbox("Layer 2 Soil / סוג קרקע שכבה 2", ["Loose Sand / חול רך", "Dense Sand / חול צפוף", "Clay / חרסית"], index=1)
+    layer_bot = st.selectbox("Layer 3 Soil / סוג קרקע שכבה 3", ["Loose Sand / חול רך", "Dense Sand / חול צפוף", "Clay / חרסית"], index=1)
+    
+    # Dynamic assignment of t_max and spring reference stiffness (k_spring in kN/m3) based on selection
+    def get_soil_properties(soil_type, depth):
+        if depth == 0:
+            return 0, 0
+        if "Dense Sand" in soil_type:
+            return 100 + (10 - depth) * 2, 40000  # High t_max, high subgrade modulus
+        elif "Loose Sand" in soil_type:
+            return 65 + depth * 2, 15000       # Lower t_max, lower subgrade modulus
+        else: # Clay / חרסית
+            return 80, 25000                   # Constant cohesion behavior
+            
+    t_max = {}
+    k_soil = {} # subgrade modulus (kN/m3)
+    
+    for depth in range(11):
+        if depth == 0:
+            t_max[depth] = 0
+            k_soil[depth] = 0
+        elif depth <= layer1_end:
+            t_max[depth], k_soil[depth] = get_soil_properties(layer_top, depth)
+        elif depth <= layer2_end:
+            t_max[depth], k_soil[depth] = get_soil_properties(layer_mid, depth)
+        else:
+            t_max[depth], k_soil[depth] = get_soil_properties(layer_bot, depth)
 
-    edited_df = st.data_editor(default_layers, num_rows="dynamic", use_container_width=True, hide_index=True)
+# Model computation core / פונקציית ליבה של החישוב
+def run_pile_model(w_b):
+    w_v = {}
+    F_f = {}
+    P_v = {}
+    k_spring_eff = {} # Calculated local spring stiffness (kN/m)
+    
+    for node in range(10, -1, -1):
+        if node == 10:
+            w_v[node] = w_b
+            F_f[node] = U * dz * t_max[node]
+            P_v[node] = B * np.sqrt(w_b) if w_b > 0 else 0.0
+            k_spring_eff[node] = (k_soil[node] * U * dz) if w_b == 0 else (F_f[node] / w_b if w_b > 0 else 0)
+        else:
+            prev = node + 1
+            w_v[node] = w_v[prev] + (P_v[prev] * dz) / (E * A)
+            F_f[node] = U * dz * t_max[node] if node > 0 else 0
+            P_v[node] = P_v[prev] + F_f[prev]
+            k_spring_eff[node] = (k_soil[node] * U * dz) if w_v[node] == 0 else (F_f[node] / w_v[node] if w_v[node] > 0 else 0)
+            
+    return w_v, F_f, P_v, k_spring_eff
 
-layers_df = edited_df.dropna().sort_values(by="עומק תחתית שכבה (מ')").reset_index(drop=True)
+# 1. Compute for the current selected point / חישוב הנקודה הנבחרת
+w_actual, F_actual, P_actual, k_spring_actual = run_pile_model(w_base_input)
 
-if len(layers_df) > 0:
-    depths, w_node, P_node, t_mob_seg, F_fric_seg, cum_fric_seg, q_base, state_seg, stage_name = shoot_top_down(
-        w0_mm / 1000.0, layers_df, E, D, B
+# 2. Build Load-Settlement Curve / בניית עקומת עומס-שקיעה (שורות 73-74 המתוקנות)
+w_base_range = np.linspace(0, 0.03, 100)
+top_loads = []
+top_settlements = []
+
+for wb in w_base_range:
+    w_res, _, P_res, _ = run_pile_model(wb)
+    top_loads.append(P_res[0])
+    top_settlements.append(w_res[0] * 1000)
+
+# Build results dataframe / טבלת נתונים
+df_results = pd.DataFrame({
+    "Node / צומת (i)": list(range(11)),
+    "Depth / עומק z (m)": [i * 1.0 for i in range(11)],
+    "Settlement / שקיעה w_i (m)": [w_actual[i] for i in range(11)],
+    "t_max (kPa)": [t_max[i] for i in range(11)],
+    "Spring Stiffness / קשיחות קפיץ K_sp (kN/m)": [k_spring_actual[i] for i in range(11)],
+    "Friction Force / כוח חיכוך F_fric (kN)": [F_actual[i] for i in range(11)],
+    "Internal Force / כוח פנימי P_i (kN)": [P_actual[i] for i in range(11)]
+})
+
+with col_results:
+    st.header("📊 Model Analysis Results / תוצאות המודל")
+    
+    # Metrics / מדדים מהירים
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Top Load / עומס בראש P₀", f"{P_actual[0]:,.1f} kN")
+    m2.metric("Top Settlement / שקיעה בראש w₀", f"{w_actual[0]*1000:.2f} mm")
+    m3.metric("Base Force / כוח בבסיס P_base", f"{P_actual[10]:,.1f} kN")
+    
+    # Graphs - Three columns / שלושה טורי גרפים
+    g_col1, g_col2, g_col3 = st.columns(3)
+    
+    with g_col1:
+        st.markdown("### 📈 Load-Settlement / עומס-שקיעה")
+        fig1, ax1 = plt.subplots(figsize=(4, 4))
+        ax1.plot(top_loads, top_settlements, color='#C00000', linewidth=2.5)
+        ax1.plot(P_actual[0], w_actual[0]*1000, marker='X', color='black', markersize=10)
+        ax1.set_xlabel("Top Load P₀ (kN)")
+        ax1.set_ylabel("Top Settlement w₀ (mm)")
+        ax1.invert_yaxis()
+        ax1.grid(True, linestyle='--', alpha=0.5)
+        st.pyplot(fig1)
+
+    with g_col2:
+        st.markdown("### 📉 Force Distribution / פיזור מאמצים")
+        fig2, ax2 = plt.subplots(figsize=(4, 4))
+        ax2.plot(df_results["Internal Force / כוח פנימי P_i (kN)"], df_results["Depth / עומק z (m)"], marker='o', color='#1F497D', linewidth=2)
+        ax2.set_xlabel("Internal Force P_i (kN)")
+        ax2.set_ylabel("Depth z (m)")
+        ax2.invert_yaxis()
+        ax2.grid(True, linestyle='--', alpha=0.5)
+        st.pyplot(fig2)
+
+    with g_col3:
+        st.markdown("### 📊 Spring Stiffness / קשיחות קפיץ")
+        fig3, ax3 = plt.subplots(figsize=(4, 4))
+        ax3.plot(df_results["Spring Stiffness / קשיחות קפיץ K_sp (kN/m)"], df_results["Depth / עומק z (m)"], marker='s', color='#2E7D32', linewidth=2)
+        ax3.set_xlabel("Spring Stiffness K_sp (kN/m)")
+        ax3.set_ylabel("Depth z (m)")
+        ax3.invert_yaxis()
+        ax3.grid(True, linestyle='--', alpha=0.5)
+        st.pyplot(fig3)
+        
+    st.markdown("### Detailed Element Table / טבלת אלמנטים מפורטת")
+    st.dataframe(df_results.style.format({
+        "Settlement / שקיעה w_i (m)": "{:.4f}",
+        "Spring Stiffness / קשיחות קפיץ K_sp (kN/m)": "{:,.1f}",
+        "Friction Force / כוח חיכוך F_fric (kN)": "{:,.1f}",
+        "Internal Force / כוח פנימי P_i (kN)": "{:,.1f}"
+    }), use_container_width=True)
+
+    # 💾 Export to CSV Button / כפתור ייצוא ל-CSV
+    st.markdown("---")
+    st.subheader("💾 Export Data / ייצוא נתונים")
+    
+    csv_data = df_results.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download Results as CSV / הורד תוצאות כקובץ CSV",
+        data=csv_data,
+        file_name="Pile_Model_Advanced.csv",
+        mime="text/csv"
     )
+report_csv = results_df.to_csv(index=False).encode('utf-8-sig')
+st.download_button(
+label="📄 הורד דו"ח תוצאות מלא לאקסל (CSV)",
+data=report_csv,
+file_name=f"pile_topdown_report_D{D}_w{w0_mm}mm.csv",
+mime="text/csv"
+)
+tab1, tab2 = st.tabs(["📈 עקומת עומס-שקיעה מלאה (מ-0 עד כשל)", "📋 התקדמות החזית לעומק"])
+with tab1:
+fig_ls, ax_ls = plt.subplots(figsize=(8.5, 4.2))
+ax_ls.plot(w0_curve, P0_curve, label='עומס כולל בראש הכלונס (P₀)', color='#1f497d', linewidth=2.5)
+ax_ls.plot(w0_curve, cum_fric_curve, '-.', label='חיכוך מעטפת מצטבר (ΣF)', color='green', linewidth=2)
+ax_ls.plot(w0_curve, Pbase_curve, '--', label='עומס שמגיע לקצה (P_base)', color='#d9534f', linewidth=2)
+ax_ls.scatter([w0_mm], [float(P_node.item(0))], color='black', s=85, zorder=5, label='נקודת הרצה נוכחית')
+ax_ls.set_xlabel("תזוזה בראש הכלונס w₀ (מ"מ)")
+ax_ls.set_ylabel("כוח (kN)")
+ax_ls.set_title("עקומת עומס-שקיעה מלאה – משלב א' (גיוס מעטפת) לשלב ב' (גיוס קצה)")
+ax_ls.grid(True, linestyle='--', alpha=0.5)
+ax_ls.legend()
+st.pyplot(fig_ls)
+with tab2:
+st.dataframe(results_df.style.format({
+"תזוזה w (מ"מ)": "{:.2f}",
+"מאמץ בפועל t_mob (kPa)": "{:.1f}",
+"כוח שכבה (kN)": "{:.1f}",
+"חיכוך מצטבר ΣF (kN)": "{:,.1f}",
+"כוח צירי נותר P (kN)": "{:,.1f}"
+}), use_container_width=True, hide_index=True)
 
-    w0_sweep = np.linspace(0.0, 0.04, 65)
-    P0_curve, w0_curve, Pbase_curve, cum_fric_curve = [], [], [], []
-    for w_top in w0_sweep:
-        _, wn, Pn, _, _, cf, _, _, _ = shoot_top_down(float(w_top), layers_df, E, D, B)
-        w0_curve.append(float(wn.item(0)) * 1000.0)
-        P0_curve.append(float(Pn.item(0)))
-        Pbase_curve.append(float(Pn[-1]))
-        cum_fric_curve.append(float(cf[-1]))
-
-    with col_results:
-        st.info(f"**מצב נוכחי במודל:** {stage_name}")
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("עומס בראש P₀", f"{float(P_node.item(0)):,.1f} kN")
-        k2.metric("תזוזה בראש w₀", f"{float(w_node.item(0))*1000:.2f} מ\"מ")
-        k3.metric("עומס בקצה P_base", f"{float(P_node[-1]):,.1f} kN")
-        k4.metric("לחץ בקצה q_base", f"{q_base:,.1f} kPa")
-
-        results_df = pd.DataFrame({
-            "שכבה": range(1, len(layers_df) + 1),
-            "עומק (מ')": [f"{depths[i]:.1f} - {depths[i+1]:.1f}" for i in range(len(layers_df))],
-            "תזוזה w (מ\"מ)": w_node[:-1] * 1000.0,
-            "מאמץ בפועל t_mob (kPa)": t_mob_seg,
-            "כוח שכבה (kN)": F_fric_seg,
-            "חיכוך מצטבר ΣF (kN)": cum_fric_seg,
-            "כוח צירי נותר P (kN)": P_node[:-1],
-            "מצב השכבה": state_seg
+END OF FILE

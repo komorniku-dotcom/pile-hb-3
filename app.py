@@ -27,8 +27,6 @@ def shoot_top_down(w0, layers_df, E, D, B):
     num_layers = len(layers_df)
     depths = [0.0] + layers_df["עומק תחתית שכבה (מ')"].tolist()
 
-    # שלב א': בדיקת שיווי משקל כאשר הקצה נייח (w_base = 0)
-    # מתחילים מלמטה עם w=0 ועולים, או בודקים אם w0 מספיק להגיע לקצה
     w_node = np.zeros(num_layers + 1)
     P_node = np.zeros(num_layers + 1)
     t_mob_seg = np.zeros(num_layers)
@@ -46,25 +44,22 @@ def shoot_top_down(w0, layers_df, E, D, B):
         w_p = layers_df.loc[i, "תזוזת שיא w_peak (מ\"מ)"] / 1000.0
         w_r = layers_df.loc[i, "תזוזת התייצבות w_res (מ\"מ)"] / 1000.0
 
-        # הערכת תזוזה באמצע המקטע
         w_est = w_crit[i + 1] + (P_crit[i + 1] * dz) / (E * A) + 0.5 * w_p
         t_m, _ = calc_shear_stress(0.5 * (w_crit[i + 1] + w_est), t_p, t_r, w_p, w_r)
         F_f = U * dz * t_m
         P_crit[i] = P_crit[i + 1] + F_f
         w_crit[i] = w_crit[i + 1] + (0.5 * (P_crit[i] + P_crit[i + 1]) * dz) / (E * A)
 
-    w0_limit = w_crit
+    w0_limit = float(w_crit[0])
 
     # בדיקה: האם אנחנו בשלב א' (החזית טרם הגיעה לקצה) או בשלב ב' (הקצה מגויס)?
     if w0 <= w0_limit:
-        # שלב א': ירידה מלמעלה למטה – מוצאים באיזה עומק התזוזה והכוח מתאפסים
-        w_node = w0
-        # פתרון איטרטיבי למציאת P0 שמתאים ל-w0 כאשר התחתית חופשית (P_base = 0)
+        w_node[0] = w0
         def residual_stage_a(P0_guess):
             w_tmp = np.zeros(num_layers + 1)
             P_tmp = np.zeros(num_layers + 1)
-            w_tmp = w0
-            P_tmp = P0_guess
+            w_tmp[0] = w0
+            P_tmp[0] = P0_guess
             for i in range(num_layers):
                 if P_tmp[i] <= 1e-6 or w_tmp[i] <= 1e-9:
                     w_tmp[i + 1] = 0.0
@@ -83,23 +78,21 @@ def shoot_top_down(w0, layers_df, E, D, B):
                 F_f = U * dz * t_m
 
                 if F_f >= P_tmp[i]:
-                    # הכוח נספג לחלוטין בתוך שכבה זו!
                     P_tmp[i + 1] = 0.0
                     w_tmp[i + 1] = 0.0
                 else:
                     P_tmp[i + 1] = P_tmp[i] - F_f
                     P_mean = 0.5 * (P_tmp[i] + P_tmp[i + 1])
                     w_tmp[i + 1] = max(w_tmp[i] - (P_mean * dz) / (E * A), 0.0)
-            return P_tmp[-1]
+            return float(P_tmp[-1])
 
         try:
-            P0_solved = brentq(residual_stage_a, 0.0, P_crit * 1.5)
+            P0_solved = brentq(residual_stage_a, 0.0, float(P_crit[0]) * 1.5)
         except:
-            P0_solved = P_crit * (w0 / max(w0_limit, 1e-6))
+            P0_solved = float(P_crit[0]) * (w0 / max(w0_limit, 1e-6))
 
-        # הרצה סופית מלמעלה למטה עם P0_solved
-        w_node = w0
-        P_node = P0_solved
+        w_node[0] = w0
+        P_node[0] = P0_solved
         for i in range(num_layers):
             if P_node[i] <= 1e-6 or w_node[i] <= 1e-9:
                 w_node[i + 1] = 0.0
@@ -136,7 +129,6 @@ def shoot_top_down(w0, layers_df, E, D, B):
 
         stage_name = "שלב א': גיוס הדרגתי מלמעלה (הקצה עדיין נייח, P_base = 0)"
     else:
-        # שלב ב': החזית עברה את כל המעטפת והקצה התחתון מגויס (w_base > 0)
         def eval_from_wbase(wb):
             wn = np.zeros(num_layers + 1)
             Pn = np.zeros(num_layers + 1)
@@ -161,12 +153,12 @@ def shoot_top_down(w0, layers_df, E, D, B):
                 tm[i], Ff[i], ss[i] = t_mob, F_f, st_l
             return wn, Pn, tm, Ff, ss
 
-        wb_solved = brentq(lambda wb: eval_from_wbase(wb) - w0, 0.0, 0.2)
+        wb_solved = brentq(lambda wb: float(eval_from_wbase(wb)[0][0]) - w0, 0.0, 0.5)
         w_node, P_node, t_mob_seg, F_fric_seg, state_seg = eval_from_wbase(wb_solved)
         stage_name = "שלב ב': הקצה מגויס (תגובת בסיס פרבולית פעילה)"
 
     cum_fric_seg = np.cumsum(F_fric_seg)
-    q_base = P_node[-1] / A
+    q_base = float(P_node[-1]) / A
     return depths, w_node, P_node, t_mob_seg, F_fric_seg, cum_fric_seg, q_base, state_seg, stage_name
 
 col_inputs, col_results = st.columns([1.25, 1.75])
@@ -205,12 +197,19 @@ if len(layers_df) > 0:
     w0_sweep = np.linspace(0.0, 0.04, 65)
     P0_curve, w0_curve, Pbase_curve, cum_fric_curve = [], [], [], []
     for w_top in w0_sweep:
-        _, wn, Pn, _, _, cf, _, _, _ = shoot_top_down(w_top, layers_df, E, D, B)
-        w0_curve.append(wn * 1000.0)
-        P0_curve.append(Pn)
-        Pbase_curve.append(Pn[-1])
-        cum_fric_curve.append(cf[-1])
+        _, wn, Pn, _, _, cf, _, _, _ = shoot_top_down(float(w_top), layers_df, E, D, B)
+        w0_curve.append(float(wn[0]) * 1000.0)
+        P0_curve.append(float(Pn[0]))
+        Pbase_curve.append(float(Pn[-1]))
+        cum_fric_curve.append(float(cf[-1]))
 
     with col_results:
         st.info(f"**מצב נוכחי במודל:** {stage_name}")
         k1, k2, k3, k4 = st.columns(4)
+        k1.metric("עומס בראש P₀", f"{float(P_node[0]):,.1f} kN")
+        k2.metric("תזוזה בראש w₀", f"{float(w_node[0])*1000:.2f} מ\"מ")
+        k3.metric("עומס בקצה P_base", f"{float(P_node[-1]):,.1f} kN")
+        k4.metric("לחץ בקצה q_base", f"{q_base:,.1f} kPa")
+
+        results_df = pd.DataFrame({
+            "שכבה": range(1, len(layers_df) + 1),

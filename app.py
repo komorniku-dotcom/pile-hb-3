@@ -8,7 +8,6 @@ st.set_page_config(page_title="מודל כלונס מלמעלה למטה (Top-Do
 st.title("🏗️ מודל גיאומכני מלמעלה למטה (Top-Down) – גיוס הדרגתי מהראש לקצה (V7)")
 st.markdown("---")
 
-# פונקציית מאמץ הגזירה המקומי לפי התזוזה (אלסטי -> ריכוך -> משתייר)
 def calc_shear_stress(w, t_peak, t_res, w_p, w_r):
     if w <= 1e-9 or t_peak <= 0:
         return 0.0, "נייח (עומס טרם הגיע)"
@@ -20,7 +19,6 @@ def calc_shear_stress(w, t_peak, t_res, w_p, w_r):
     else:
         return t_res, "משתייר (Residual)"
 
-# סימולציה שיורדת מלמעלה למטה (מראש הכלונס לקצה) עבור שקיעת ראש נתונה w0
 def shoot_top_down(w0, layers_df, E, D, B):
     A = np.pi * (D**2) / 4.0
     U = np.pi * D
@@ -33,7 +31,6 @@ def shoot_top_down(w0, layers_df, E, D, B):
     F_fric_seg = np.zeros(num_layers)
     state_seg = [""] * num_layers
 
-    # חישוב שקיעת הראש המינימלית שבה החזית מגיעה בדיוק לקצה (w_base = 0)
     w_crit = np.zeros(num_layers + 1)
     P_crit = np.zeros(num_layers + 1)
     for i in range(num_layers - 1, -1, -1):
@@ -50,11 +47,9 @@ def shoot_top_down(w0, layers_df, E, D, B):
         P_crit[i] = P_crit[i + 1] + F_f
         w_crit[i] = w_crit[i + 1] + (0.5 * (P_crit[i] + P_crit[i + 1]) * dz) / (E * A)
 
-    w0_limit = float(w_crit[0])
+    w0_limit = float(w_crit.item(0))
 
-    # בדיקה: האם אנחנו בשלב א' (החזית טרם הגיעה לקצה) או בשלב ב' (הקצה מגויס)?
     if w0 <= w0_limit:
-        w_node[0] = w0
         def residual_stage_a(P0_guess):
             w_tmp = np.zeros(num_layers + 1)
             P_tmp = np.zeros(num_layers + 1)
@@ -87,9 +82,9 @@ def shoot_top_down(w0, layers_df, E, D, B):
             return float(P_tmp[-1])
 
         try:
-            P0_solved = brentq(residual_stage_a, 0.0, float(P_crit[0]) * 1.5)
-        except:
-            P0_solved = float(P_crit[0]) * (w0 / max(w0_limit, 1e-6))
+            P0_solved = brentq(residual_stage_a, 0.0, float(P_crit.item(0)) * 1.5)
+        except Exception:
+            P0_solved = float(P_crit.item(0)) * (w0 / max(w0_limit, 1e-6))
 
         w_node[0] = w0
         P_node[0] = P0_solved
@@ -153,7 +148,7 @@ def shoot_top_down(w0, layers_df, E, D, B):
                 tm[i], Ff[i], ss[i] = t_mob, F_f, st_l
             return wn, Pn, tm, Ff, ss
 
-        wb_solved = brentq(lambda wb: float(eval_from_wbase(wb)[0][0]) - w0, 0.0, 0.5)
+        wb_solved = brentq(lambda wb: float(eval_from_wbase(wb)[0].item(0)) - w0, 0.0, 0.5)
         w_node, P_node, t_mob_seg, F_fric_seg, state_seg = eval_from_wbase(wb_solved)
         stage_name = "שלב ב': הקצה מגויס (תגובת בסיס פרבולית פעילה)"
 
@@ -193,23 +188,29 @@ if len(layers_df) > 0:
         w0_mm / 1000.0, layers_df, E, D, B
     )
 
-    # חישוב עקומת עומס-שקיעה מלאה מ-0 (שלב א' + שלב ב')
     w0_sweep = np.linspace(0.0, 0.04, 65)
     P0_curve, w0_curve, Pbase_curve, cum_fric_curve = [], [], [], []
     for w_top in w0_sweep:
         _, wn, Pn, _, _, cf, _, _, _ = shoot_top_down(float(w_top), layers_df, E, D, B)
-        w0_curve.append(float(wn[0]) * 1000.0)
-        P0_curve.append(float(Pn[0]))
+        w0_curve.append(float(wn.item(0)) * 1000.0)
+        P0_curve.append(float(Pn.item(0)))
         Pbase_curve.append(float(Pn[-1]))
         cum_fric_curve.append(float(cf[-1]))
 
     with col_results:
         st.info(f"**מצב נוכחי במודל:** {stage_name}")
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("עומס בראש P₀", f"{float(P_node[0]):,.1f} kN")
-        k2.metric("תזוזה בראש w₀", f"{float(w_node[0])*1000:.2f} מ\"מ")
+        k1.metric("עומס בראש P₀", f"{float(P_node.item(0)):,.1f} kN")
+        k2.metric("תזוזה בראש w₀", f"{float(w_node.item(0))*1000:.2f} מ\"מ")
         k3.metric("עומס בקצה P_base", f"{float(P_node[-1]):,.1f} kN")
         k4.metric("לחץ בקצה q_base", f"{q_base:,.1f} kPa")
 
         results_df = pd.DataFrame({
             "שכבה": range(1, len(layers_df) + 1),
+            "עומק (מ')": [f"{depths[i]:.1f} - {depths[i+1]:.1f}" for i in range(len(layers_df))],
+            "תזוזה w (מ\"מ)": w_node[:-1] * 1000.0,
+            "מאמץ בפועל t_mob (kPa)": t_mob_seg,
+            "כוח שכבה (kN)": F_fric_seg,
+            "חיכוך מצטבר ΣF (kN)": cum_fric_seg,
+            "כוח צירי נותר P (kN)": P_node[:-1],
+            "מצב השכבה": state_seg
